@@ -6,6 +6,8 @@ from gobbli.model.bert import BERT
 from gobbli.model.fasttext import FastText
 from gobbli.model.majority import MajorityClassifier
 from gobbli.model.mtdnn import MTDNN
+from gobbli.model.sklearn import SKLearnClassifier
+from gobbli.model.spacy import SpaCyModel
 from gobbli.model.transformer import Transformer
 from gobbli.test.util import model_test_dir, skip_if_low_resource, validate_checkpoint
 
@@ -27,6 +29,8 @@ def check_predict_output(train_output, predict_input, predict_output):
     [
         (MajorityClassifier, TrivialDataset, {}, {}, {}),
         (MajorityClassifier, NewsgroupsDataset, {}, {}, {}),
+        (SKLearnClassifier, TrivialDataset, {}, {}, {}),
+        (SKLearnClassifier, NewsgroupsDataset, {}, {}, {}),
         (
             BERT,
             TrivialDataset,
@@ -58,14 +62,14 @@ def check_predict_output(train_output, predict_input, predict_output):
         (
             FastText,
             TrivialDataset,
-            {},
+            {"autotune_duration": 10},
             {"num_train_epochs": 1, "train_batch_size": 1, "valid_batch_size": 1},
             {"predict_batch_size": 1},
         ),
         (
             FastText,
             NewsgroupsDataset,
-            {},
+            {"autotune_duration": 10},
             {"num_train_epochs": 1, "train_batch_size": 32, "valid_batch_size": 32},
             {"predict_batch_size": 32},
         ),
@@ -82,6 +86,20 @@ def check_predict_output(train_output, predict_input, predict_output):
             {"max_seq_length": 128},
             {"num_train_epochs": 1, "train_batch_size": 16, "valid_batch_size": 32},
             {"predict_batch_size": 32},
+        ),
+        (
+            SpaCyModel,
+            TrivialDataset,
+            {"model": "en_core_web_sm", "architecture": "bow"},
+            {"num_train_epochs": 1, "train_batch_size": 1},
+            {},
+        ),
+        (
+            SpaCyModel,
+            NewsgroupsDataset,
+            {"model": "en_core_web_sm", "architecture": "bow"},
+            {"num_train_epochs": 1, "train_batch_size": 32},
+            {},
         ),
     ],
 )

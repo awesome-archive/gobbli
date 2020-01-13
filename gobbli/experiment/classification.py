@@ -422,7 +422,7 @@ class ClassificationExperiment(BaseExperiment):
         Run the experiment.
 
         Args:
-          train_valid_test_split: A tuple describing the proportion of the dataset
+          dataset_split: A tuple describing the proportion of the dataset
             to be added to the train/validation/test splits.  If the experiment uses an explicit
             test set (passes :paramref:`BaseExperiment.params.test_dataset`), this should be a
             2-tuple describing the train/validation split.  Otherwise, it should be a 3-tuple
@@ -479,6 +479,15 @@ class ClassificationExperiment(BaseExperiment):
             test_size=round(valid_prop / train_valid_prop, 4),
         )
 
+        if self.param_grid is not None:
+            for param, values in self.param_grid.items():
+                if isinstance(values, str):
+                    raise TypeError(
+                        f"String detected in parameter grid values for parameter '{param}'. "
+                        "This will be treated as a list of character parameter values, "
+                        "which probably isn't what you want.  If you're really sure, "
+                        "convert the string to a list of characters and try again."
+                    )
         grid = ParameterGrid(self.param_grid)
         if len(grid) == 0:
             raise ValueError("empty parameter grid")

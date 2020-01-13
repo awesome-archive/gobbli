@@ -1,4 +1,6 @@
 import json
+import warnings
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -13,10 +15,12 @@ from gobbli.model.mixin import EmbedMixin, PredictMixin, TrainMixin
 from gobbli.util import assert_type, escape_line_delimited_texts
 
 
-class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
+class SpaCyModel(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
     """
-    Classifier/embedding wrapper for any of the Transformers from
-    `transformers <https://github.com/huggingface/transformers>`__.
+    gobbli interface for spaCy language models which allows for training
+    and prediction via the
+    `TextCategorizer pipeline component <https://spacy.io/api/textcategorizer>`__
+    and static embeddings via `Vectors <https://spacy.io/api/vectors>`__.
     """
 
     _BUILD_PATH = Path(__file__).parent
@@ -25,7 +29,6 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
     _VALID_INPUT_FILE = "dev.tsv"
     _TEST_INPUT_FILE = "test.tsv"
     _LABELS_INPUT_FILE = "labels.tsv"
-    _CONFIG_OVERRIDE_FILE = "config.json"
 
     _TRAIN_OUTPUT_CHECKPOINT = "checkpoint"
     _VALID_OUTPUT_FILE = "valid_results.json"
@@ -40,61 +43,37 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         """
         See :meth:`gobbli.model.base.BaseModel.init`.
 
-        Transformer parameters:
+        spaCy parameters:
 
-        - ``transformer_model`` (:obj:`str`): Name of a transformer model architecture to use.
-          For training/prediction, the value should be one such that
-          ``from transformers import <value>ForSequenceClassification`` is
-          a valid import.  ex value = "Bert" ->
-          ``from transformers import BertForSequenceClassification``.  Note this means
-          only a subset of the transformers models are supported for these tasks -- search
-          `the docs <https://huggingface.co/transformers/search.html?q=forsequenceclassification&check_keywords=yes&area=default>`__ to see which ones you can use.
-          For embedding generation, the import is ``<value>Model``, so any transformer
-          model is supported.
-        - ``transformer_weights`` (:obj:`str`): Name of the pretrained weights to use.
-          See the `transformers docs <https://huggingface.co/transformers/pretrained_models.html>`__
-          for supported values.  These depend on the ``transformer_model`` chosen.
-        - ``config_overrides`` (:obj:`dict`): Dictionary of keys and values that will
-          override config for the model.
-        - ``max_seq_length``: Truncate all sequences to this length after tokenization.
-          Used to save memory.
-        - ``lr``: Learning rate for the AdamW optimizer.
-        - ``adam_eps``: Epsilon value for the AdamW optimizer.
-        - ``gradient_accumulation_steps``: Number of iterations to accumulate gradients before
-          updating the model.  Used to allow larger effective batch sizes for models too big to
-          fit a large batch on the GPU.
+        - ``model`` (:obj:`str`): Name of a spaCy model to use.
+          Available values are in `the spaCy model docs <https://spacy.io/models>`__.
+        - ``architecture`` (:obj:`str`): Model architecture to use.
+          Available values are in `the spaCy API docs <https://spacy.io/api/textcategorizer#architectures>`__.
+        - ``dropout`` (:obj:`float`): Dropout proportion for training.
+        - ``full_pipeline`` (:obj:`bool`): If True, enable the full spaCy language pipeline
+          (including tagging, parsing, and named entity recognition) for the TextCategorizer
+          model used in training and prediction.  This makes training/prediction much slower
+          but theoretically provides more information to the model.
 
-        Note that gobbli relies on transformers to perform validation on these parameters,
+        Note that gobbli relies on spaCy to perform validation on these parameters,
         so initialization errors may not be caught until model runtime.
         """
-        self.transformer_model = "Bert"
-        self.transformer_weights = "bert-base-uncased"
-        self.config_overrides = {}  # type: Dict[str, Any]
-        self.max_seq_length = 128
-        self.lr = 5e-5
-        self.adam_eps = 1e-8
-        self.gradient_accumulation_steps = 1
+        self.model = "en_core_web_lg"
+        self.architecture = "ensemble"
+        self.dropout = 0.2
+        self.full_pipeline = False
 
         for name, value in params.items():
-            if name == "transformer_model":
-                self.transformer_model = value
-            elif name == "transformer_weights":
-                self.transformer_weights = value
-            elif name == "config_overrides":
-                assert_type(name, value, dict)
-                self.config_overrides = value
-            elif name == "max_seq_length":
-                assert_type(name, value, int)
-                self.max_seq_length = value
-            elif name == "lr":
+            if name == "model":
+                self.model = value
+            elif name == "architecture":
+                self.architecture = value
+            elif name == "dropout":
                 assert_type(name, value, float)
-                self.lr = value
-            elif name == "adam_eps":
-                assert_type(name, value, float)
-                self.adam_eps = value
-            elif name == "gradient_accumulation_steps":
-                assert_type(name, value, int)
-                self.gradient_accumulation_steps = value
+                self.dropout = value
+            elif name == "full_pipeline":
+                assert_type(name, value, bool)
+                self.full_pipeline = value
             else:
                 raise ValueError(f"Unknown param '{name}'")
 
@@ -102,15 +81,19 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
     def image_tag(self) -> str:
         """
         Returns:
-          The Docker image tag to be used for the transformer container.
+          The Docker image tag to be used for the spaCy container.
         """
-        return "gobbli-transformer"
+        return "gobbli-spacy"
 
     def _build(self):
+        # Add the spaCy model to the image build so it's properly installed
+        base_build_kwargs = deepcopy(self._base_docker_build_kwargs)
+        if "buildargs" not in base_build_kwargs:
+            base_build_kwargs["buildargs"] = {}
+        base_build_kwargs["buildargs"]["model"] = self.model
+
         self.docker_client.images.build(
-            path=str(Transformer._BUILD_PATH),
-            tag=self.image_tag,
-            **self._base_docker_build_kwargs,
+            path=str(SpaCyModel._BUILD_PATH), tag=self.image_tag, **base_build_kwargs
         )
 
     @staticmethod
@@ -139,27 +122,25 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
 
         return host_checkpoint_dir, container_checkpoint_dir
 
-    def _get_weights(
-        self, container_checkpoint_dir: Optional[Path]
-    ) -> Union[str, Path]:
+    def _get_model(self, container_checkpoint_dir: Optional[Path]) -> Union[str, Path]:
         """
-        Determine the weights to pass to the run_model script.  If we don't have a
-        checkpoint, we'll use the pretrained weights.  Otherwise, we should use the
-        checkpoint weights.
+        Determine the model to pass to the run_spacy script.  If we don't have a
+        checkpoint, we'll use our stock model.  Otherwise, we should use the
+        checkpoint.
         """
         if container_checkpoint_dir is None:
-            return self.transformer_weights
+            return self.model
         else:
             return container_checkpoint_dir
 
     @property
     def host_cache_dir(self):
         """
-        Directory to be used for downloaded transformers files.
+        Directory to be used for downloaded spaCy files.
         Should be the same across all instances of the class, since these are
-        generally static model weights/config files that can be reused.
+        generally static model weights that can be reused.
         """
-        cache_dir = Transformer.model_class_dir() / "cache"
+        cache_dir = SpaCyModel.model_class_dir() / "cache"
         cache_dir.mkdir(exist_ok=True, parents=True)
         return cache_dir
 
@@ -181,32 +162,30 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         """
         labels_path.write_text(escape_line_delimited_texts(labels))
 
-    def _write_config(self, config_path: Path):
-        """
-        Write our model configuration overrides to the given path.
-        """
-        with open(config_path, "w") as f:
-            json.dump(self.config_overrides, f)
-
     def _train(
         self, train_input: gobbli.io.TrainInput, context: ContainerTaskContext
     ) -> gobbli.io.TrainOutput:
 
+        if train_input.valid_batch_size != gobbli.io.TrainInput.valid_batch_size:
+            warnings.warn(
+                "The spaCy model doesn't batch validation data, so the validation "
+                "batch size parameter will be ignored."
+            )
+
         self._write_input(
             train_input.X_train,
             train_input.y_train,
-            context.host_input_dir / Transformer._TRAIN_INPUT_FILE,
+            context.host_input_dir / SpaCyModel._TRAIN_INPUT_FILE,
         )
         self._write_input(
             train_input.X_valid,
             train_input.y_valid,
-            context.host_input_dir / Transformer._VALID_INPUT_FILE,
+            context.host_input_dir / SpaCyModel._VALID_INPUT_FILE,
         )
-        self._write_config(context.host_input_dir / Transformer._CONFIG_OVERRIDE_FILE)
 
         labels = train_input.labels()
         self._write_labels(
-            labels, context.host_input_dir / Transformer._LABELS_INPUT_FILE
+            labels, context.host_input_dir / SpaCyModel._LABELS_INPUT_FILE
         )
 
         # Determine checkpoint to use
@@ -215,22 +194,20 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         )
 
         cmd = (
-            "python3 run_model.py"
+            "python3 run_spacy.py"
             " train"
             f" --input-dir {context.container_input_dir}"
             f" --output-dir {context.container_output_dir}"
-            f" --config-overrides {context.container_input_dir / Transformer._CONFIG_OVERRIDE_FILE}"
-            f" --model {self.transformer_model}"
-            f" --weights {self._get_weights(container_checkpoint_dir)}"
-            f" --cache-dir {Transformer._CONTAINER_CACHE_DIR}"
-            f" --max-seq-length {self.max_seq_length}"
+            f" --model {self._get_model(container_checkpoint_dir)}"
+            f" --architecture {self.architecture}"
+            f" --cache-dir {SpaCyModel._CONTAINER_CACHE_DIR}"
             f" --train-batch-size {train_input.train_batch_size}"
-            f" --valid-batch-size {train_input.valid_batch_size}"
             f" --num-train-epochs {train_input.num_train_epochs}"
-            f" --lr {self.lr}"
-            f" --adam-eps {self.adam_eps}"
-            f" --gradient-accumulation-steps {self.gradient_accumulation_steps}"
+            f" --dropout {self.dropout}"
         )
+
+        if self.full_pipeline:
+            cmd += " --full-pipeline"
 
         run_kwargs = self._base_docker_run_kwargs(context)
 
@@ -241,7 +218,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
 
         # Mount the cache directory
         maybe_mount(
-            run_kwargs["volumes"], self.host_cache_dir, Transformer._CONTAINER_CACHE_DIR
+            run_kwargs["volumes"], self.host_cache_dir, SpaCyModel._CONTAINER_CACHE_DIR
         )
 
         container_logs = run_container(
@@ -249,7 +226,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         )
 
         # Read in the generated evaluation results
-        with open(context.host_output_dir / Transformer._VALID_OUTPUT_FILE, "r") as f:
+        with open(context.host_output_dir / SpaCyModel._VALID_OUTPUT_FILE, "r") as f:
             results = json.load(f)
 
         return gobbli.io.TrainOutput(
@@ -257,7 +234,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
             valid_accuracy=results["valid_accuracy"],
             train_loss=results["mean_train_loss"],
             labels=labels,
-            checkpoint=context.host_output_dir / Transformer._TRAIN_OUTPUT_CHECKPOINT,
+            checkpoint=context.host_output_dir / SpaCyModel._TRAIN_OUTPUT_CHECKPOINT,
             _console_output=container_logs,
         )
 
@@ -268,14 +245,22 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         self, predict_input: gobbli.io.PredictInput, context: ContainerTaskContext
     ) -> gobbli.io.PredictOutput:
 
+        if (
+            predict_input.predict_batch_size
+            != gobbli.io.PredictInput.predict_batch_size
+        ):
+            warnings.warn(
+                "The spaCy model doesn't batch prediction data, so the prediction "
+                "batch size parameter will be ignored."
+            )
+
         self._write_input(
-            predict_input.X, None, context.host_input_dir / Transformer._TEST_INPUT_FILE
+            predict_input.X, None, context.host_input_dir / SpaCyModel._TEST_INPUT_FILE
         )
-        self._write_config(context.host_input_dir / Transformer._CONFIG_OVERRIDE_FILE)
 
         labels = predict_input.labels
         self._write_labels(
-            labels, context.host_input_dir / Transformer._LABELS_INPUT_FILE
+            labels, context.host_input_dir / SpaCyModel._LABELS_INPUT_FILE
         )
 
         host_checkpoint_dir, container_checkpoint_dir = self._get_checkpoint(
@@ -283,16 +268,13 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         )
 
         cmd = (
-            "python3 run_model.py"
+            "python3 run_spacy.py"
             " predict"
             f" --input-dir {context.container_input_dir}"
             f" --output-dir {context.container_output_dir}"
-            f" --config-overrides {context.container_input_dir / Transformer._CONFIG_OVERRIDE_FILE}"
-            f" --model {self.transformer_model}"
-            f" --weights {self._get_weights(container_checkpoint_dir)}"
-            f" --cache-dir {Transformer._CONTAINER_CACHE_DIR}"
-            f" --max-seq-length {self.max_seq_length}"
-            f" --predict-batch-size {predict_input.predict_batch_size}"
+            f" --model {self._get_model(container_checkpoint_dir)}"
+            f" --architecture {self.architecture}"
+            f" --cache-dir {SpaCyModel._CONTAINER_CACHE_DIR}"
         )
 
         run_kwargs = self._base_docker_run_kwargs(context)
@@ -304,7 +286,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
 
         # Mount the cache directory
         maybe_mount(
-            run_kwargs["volumes"], self.host_cache_dir, Transformer._CONTAINER_CACHE_DIR
+            run_kwargs["volumes"], self.host_cache_dir, SpaCyModel._CONTAINER_CACHE_DIR
         )
 
         container_logs = run_container(
@@ -313,7 +295,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
 
         return gobbli.io.PredictOutput(
             y_pred_proba=self._read_predictions(
-                context.host_output_dir / Transformer._TEST_OUTPUT_FILE
+                context.host_output_dir / SpaCyModel._TEST_OUTPUT_FILE
             ),
             _console_output=container_logs,
         )
@@ -343,39 +325,36 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         self._write_input(
             embed_input.X,
             None,
-            context.host_input_dir / Transformer._EMBEDDING_INPUT_FILE,
+            context.host_input_dir / SpaCyModel._EMBEDDING_INPUT_FILE,
         )
-        self._write_config(context.host_input_dir / Transformer._CONFIG_OVERRIDE_FILE)
 
-        host_checkpoint_dir, container_checkpoint_dir = self._get_checkpoint(
-            embed_input.checkpoint, context
-        )
+        if embed_input.embed_batch_size != gobbli.io.EmbedInput.embed_batch_size:
+            warnings.warn(
+                "The spaCy model doesn't batch embedding data, so the embedding "
+                "batch size parameter will be ignored."
+            )
+        if embed_input.checkpoint is not None:
+            warnings.warn(
+                "The spaCy model vectors can't be fine-tuned, so custom "
+                "checkpoints are ignored when generating embeddings."
+            )
 
         cmd = (
-            "python3 run_model.py"
+            "python3 run_spacy.py"
             " embed"
             f" --input-dir {context.container_input_dir}"
             f" --output-dir {context.container_output_dir}"
-            f" --config-overrides {context.container_input_dir / Transformer._CONFIG_OVERRIDE_FILE}"
-            f" --model {self.transformer_model}"
-            f" --weights {self._get_weights(container_checkpoint_dir)}"
-            f" --cache-dir {Transformer._CONTAINER_CACHE_DIR}"
-            f" --max-seq-length {self.max_seq_length}"
-            f" --embed-batch-size {embed_input.embed_batch_size}"
+            f" --model {self.model}"
+            f" --architecture {self.architecture}"
+            f" --cache-dir {SpaCyModel._CONTAINER_CACHE_DIR}"
             f" --embed-pooling {embed_input.pooling.value}"
-            f" --embed-layer -2"
         )
 
         run_kwargs = self._base_docker_run_kwargs(context)
 
-        # Mount the checkpoint in the container if needed
-        maybe_mount(
-            run_kwargs["volumes"], host_checkpoint_dir, container_checkpoint_dir
-        )
-
         # Mount the cache directory
         maybe_mount(
-            run_kwargs["volumes"], self.host_cache_dir, Transformer._CONTAINER_CACHE_DIR
+            run_kwargs["volumes"], self.host_cache_dir, SpaCyModel._CONTAINER_CACHE_DIR
         )
 
         container_logs = run_container(
@@ -383,7 +362,7 @@ class Transformer(BaseModel, TrainMixin, PredictMixin, EmbedMixin):
         )
 
         X_embedded, embed_tokens = self._read_embeddings(
-            context.host_output_dir / Transformer._EMBEDDING_OUTPUT_FILE,
+            context.host_output_dir / SpaCyModel._EMBEDDING_OUTPUT_FILE,
             embed_input.pooling,
         )
 
